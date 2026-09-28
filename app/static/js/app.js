@@ -182,8 +182,13 @@ function handleScanResult(data) {
       const note = data.weight_checked === false ? ' (no weight on file)' : '';
       toast(`Added ${data.name} ✓${note}`, 'ok');
     } else {
-      toast(`${data.name}: weight mismatch (expected ${data.expected_g}g, ` +
-            `got ${data.measured_delta_g}g)`, 'err', 4200);
+      if (data.mismatch_type === 'vision') {
+        const vReason = (data.vision && data.vision.reason) ? data.vision.reason : 'Item visual check failed';
+        toast(`⚠ Camera mismatch: ${data.name} — ${vReason}`, 'err', 5000);
+      } else {
+        toast(`${data.name}: weight mismatch (expected ${data.expected_g}g, ` +
+              `got ${data.measured_delta_g}g)`, 'err', 4200);
+      }
     }
     return;
   }

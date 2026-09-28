@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     camera_enabled: bool = True
     camera_index: int = 0
 
+    # ---- AI Vision Verification (Gemini) ---------------------------------
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
+    vision_verification_enabled: bool = True
+    vision_fallback_on_error: bool = True
+
     # ---- Admin / settings menu -------------------------------------------
     # PIN that unlocks the in-UI settings menu (product registration etc.).
     admin_pin: str = "1234"

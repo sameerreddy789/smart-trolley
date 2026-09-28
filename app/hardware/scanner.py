@@ -41,6 +41,8 @@ class CameraScanner:
         self._last_ts = 0.0
         self._debounce_s = debounce_s
         self.status = "stopped"
+        self._latest_jpeg_lock = threading.Lock()
+        self._latest_jpeg: bytes | None = None
 
     # -- lifecycle ---------------------------------------------------------
     def start(self, force: bool = False) -> bool:
@@ -76,6 +78,11 @@ class CameraScanner:
     @property
     def running(self) -> bool:
         return self._running
+
+    def get_latest_jpeg(self) -> bytes | None:
+        """Return the most recently captured camera frame as JPEG bytes."""
+        with self._latest_jpeg_lock:
+            return self._latest_jpeg
 
     # -- internals ---------------------------------------------------------
     def _emit(self, code: str) -> None:
@@ -115,6 +122,15 @@ class CameraScanner:
                 if not ok:
                     time.sleep(0.05)
                     continue
+
+                # Cache latest frame for vision verification
+                try:
+                    _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                    with self._latest_jpeg_lock:
+                        self._latest_jpeg = buf.tobytes()
+                except Exception:
+                    pass
+
                 for bc in pyzbar.decode(frame):
                     code = bc.data.decode("utf-8", errors="ignore").strip()
                     if code:
@@ -128,8 +144,55 @@ class CameraScanner:
 _scanner: CameraScanner | None = None
 
 
-def get_scanner(on_scan: Callable[[str], None]) -> CameraScanner:
+def get_scanner(on_scan: Callable[[str], None] | None = None) -> CameraScanner | None:
     global _scanner
-    if _scanner is None:
+    if _scanner is None and on_scan is not None:
         _scanner = CameraScanner(on_scan)
     return _scanner
+
+
+def capture_camera_frame() -> bytes | None:
+    """Return the latest camera frame or capture a fresh snapshot.
+
+    Tries:
+    1. The running CameraScanner's latest frame.
+    2. Directly capturing 1 frame using OpenCV (webcam on laptop or Pi).
+    3. If simulated and a sample frame exists at data/sample_frame.jpg, returns that.
+    """
+    global _scanner
+    if _scanner is not None and _scanner.running:
+        buf = _scanner.get_latest_jpeg()
+        if buf:
+            return buf
+
+    # Standalone snapshot attempt
+    try:
+        import cv2
+        cam_idx = settings.camera_index
+        cap = cv2.VideoCapture(cam_idx)
+        if cap.isOpened():
+            try:
+                # Discard 2 frames so sensor/auto-exposure warms up
+                for _ in range(2):
+                    cap.read()
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                    return buf.tobytes()
+            finally:
+                cap.release()
+    except Exception as exc:
+        print(f"[scanner] direct capture fallback: {exc}")
+
+    # Fallback: check if local test frame exists
+    import os
+    test_path = os.path.join("data", "sample_frame.jpg")
+    if os.path.exists(test_path):
+        try:
+            with open(test_path, "rb") as fh:
+                return fh.read()
+        except Exception:
+            pass
+
+    return None
+

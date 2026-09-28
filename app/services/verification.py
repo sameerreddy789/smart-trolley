@@ -75,11 +75,48 @@ def classify(delta_g: float, expected_g: float) -> str:
     return "mismatch"
 
 
-def camera_confirms_addition(added: bool = True) -> bool:
-    """Level-2 check stub.
+def camera_confirms_addition(
+    expected_name: str | bool = "",
+    frame_bytes: bytes | None = None,
+) -> tuple[bool, dict]:
+    """Level-2 anti-theft check using AI vision (Gemini Flash).
 
-    In simulation (and until a trained model is wired in), we assume the camera
-    agrees with the weight sensor. The hook exists so phase-2 object
-    detection can drop in here and return a real True/False.
+    Captures a frame from the trolley camera and verifies whether the item
+    seen in the basket matches `expected_name`.
+
+    Returns (confirmed: bool, details: dict).
     """
-    return added
+    if isinstance(expected_name, bool):
+        # Legacy stub compatibility
+        return expected_name, {"verified": expected_name, "reason": "legacy_stub", "bypassed": True}
+
+    if not settings.vision_verification_enabled:
+        return True, {"verified": True, "reason": "vision_disabled", "bypassed": True}
+
+    if not settings.gemini_api_key.strip():
+        return True, {"verified": True, "reason": "api_key_not_configured", "bypassed": True}
+
+    from app.services import vision
+    from app.hardware.scanner import capture_camera_frame
+
+    if frame_bytes is None:
+        frame_bytes = capture_camera_frame()
+
+    if not frame_bytes:
+        if settings.vision_fallback_on_error:
+            return True, {
+                "verified": True,
+                "confidence": 0.0,
+                "reason": "No camera frame available (fallback allowed)",
+                "bypassed": True,
+            }
+        return False, {
+            "verified": False,
+            "confidence": 0.0,
+            "reason": "Camera snapshot unavailable",
+            "bypassed": False,
+        }
+
+    res = vision.verify_item_in_image(frame_bytes, expected_name)
+    return res.get("verified", True), res
+

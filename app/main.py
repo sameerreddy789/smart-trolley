@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,7 +47,7 @@ from app.services import cart, catalog, orders, receipts, settings_store, verifi
 from app.services.catalog import CatalogError
 
 # ---- lightweight runtime state (single-cart prototype) --------------------
-_state = {
+_state: dict[str, Any] = {
     "current_session_id": None,   # active shopper session
     "payment_intents": {},        # order_ref -> PaymentIntent
     "force_theft": False,         # sim toggle: next scan mismatches
@@ -72,7 +73,9 @@ async def lifespan(_: FastAPI):
 
     # Only the machine physically holding the camera runs the capture loop.
     if not settings.is_cloud:
-        get_scanner(on_scan=_on_agent_scan).start()
+        scanner = get_scanner(on_scan=_on_agent_scan)
+        if scanner:
+            scanner.start()
 
     print(f"[app] ready | mode={settings.mode} | payment={settings.payment_provider}")
     for warning in security.startup_warnings():
@@ -82,7 +85,9 @@ async def lifespan(_: FastAPI):
 
     bridge.set_scan_sink(None)
     if not settings.is_cloud:
-        get_scanner(on_scan=_on_agent_scan).stop()
+        scanner = get_scanner(on_scan=_on_agent_scan)
+        if scanner:
+            scanner.stop()
     get_scale().close()
 
 
@@ -207,11 +212,18 @@ def _scan_sync(session_id: int, barcode: str) -> dict:
             return {"ok": False, "reason": "unknown_barcode", "barcode": barcode,
                     "feedback": "alert", "cart": cart.summarise(db, session.id)}
         if error == "is_produce":
-            return {"ok": False, "reason": "is_produce", "product_id": product.id,
-                    "name": product.name, "feedback": "info",
+            p_id = product.id if product else 0
+            p_name = product.name if product else "produce"
+            return {"ok": False, "reason": "is_produce", "product_id": p_id,
+                    "name": p_name, "feedback": "info",
                     "cart": cart.summarise(db, session.id)}
         if error == "out_of_stock":
-            return {"ok": False, "reason": "out_of_stock", "name": product.name,
+            p_name = product.name if product else "item"
+            return {"ok": False, "reason": "out_of_stock", "name": p_name,
+                    "feedback": "alert", "cart": cart.summarise(db, session.id)}
+
+        if not item or not product:
+            return {"ok": False, "reason": error or "scan_failed",
                     "feedback": "alert", "cart": cart.summarise(db, session.id)}
 
         expected = product.weight_g or 0.0
@@ -236,10 +248,13 @@ def _scan_sync(session_id: int, barcode: str) -> dict:
             }
         delta = settled - baseline
         status = verification.classify(delta, expected)
+        mismatch_type = None if status == "verified" else "weight"
 
-        # level-2 camera cross-check (stubbed until a model is wired in)
-        if status == "verified" and not verification.camera_confirms_addition(True):
+        # level-2 camera cross-check (Gemini Vision)
+        camera_ok, vision_info = verification.camera_confirms_addition(expected_name=item.name)
+        if status == "verified" and not camera_ok:
             status = "mismatch"
+            mismatch_type = "vision"
 
         cart.set_verify_status(db, item.id, status)
 
@@ -248,6 +263,8 @@ def _scan_sync(session_id: int, barcode: str) -> dict:
             "item_id": item.id,
             "name": item.name,
             "verify_status": status,
+            "mismatch_type": mismatch_type,
+            "vision": vision_info,
             "expected_g": round(expected, 1),
             "measured_delta_g": round(delta, 1),
             "weight_source": source,
@@ -549,8 +566,8 @@ async def api_produce_add(request: Request, db: Session = Depends(get_db)):
         weighed = max(0.0, current - baseline)
 
     item, product, error = cart.add_produce_item(db, session, product_id, weighed)
-    if error:
-        return {"ok": False, "reason": error, "feedback": "alert"}
+    if error or not item:
+        return {"ok": False, "reason": error or "weigh_failed", "feedback": "alert"}
     return {"ok": True, "name": item.name, "weighed_g": round(weighed, 1),
             "feedback": "ok", "cart": cart.summarise(db, session.id)}
 
@@ -570,6 +587,8 @@ async def api_checkout(request: Request, db: Session = Depends(get_db)):
                 "message": "Please resolve the flagged item before checkout."}
 
     order = orders.create_order_from_session(db, session)
+    if not order:
+        return JSONResponse({"ok": False, "error": "order_creation_failed"}, status_code=400)
     provider = get_provider()
     intent = provider.create_payment(order.order_ref, float(order.total),
                                      note=f"{settings.store_name} {order.order_ref}")
@@ -970,8 +989,8 @@ async def ws_feed(ws: WebSocket):
         while True:
             try:
                 grams = await asyncio.to_thread(scale.get_grams)
-                payload = {"type": "weight", "grams": grams,
-                           "source": _weight_source(scale)}
+                payload: dict[str, Any] = {"type": "weight", "grams": grams,
+                                           "source": _weight_source(scale)}
             except Exception as exc:
                 payload = {"type": "weight", "grams": None, "source": "offline",
                            "error": str(exc)}
