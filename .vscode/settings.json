@@ -1,0 +1,32 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingTypeStubs": "none"
+  },
+  "java.import.gradle.enabled": false,
+  "java.import.maven.enabled": false,
+  "java.autobuild.enabled": false,
+  "java.project.resourceFilters": [
+    "node_modules",
+    ".git",
+    "reverse-skill"
+  ],
+  "java.project.exclusions": [
+    "**/reverse-skill/**"
+  ],
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.metadata/**",
+    "**/archetype-resources/**",
+    "**/META-INF/maven/**",
+    "/**/test-classes/**",
+    "**/reverse-skill/**"
+  ],
+  "files.watcherExclude": {
+    "**/reverse-skill/**": true
+  }
+}
